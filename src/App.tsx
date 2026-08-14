@@ -143,12 +143,26 @@ export default function App() {
   const processQuestionRef = useRef<(question: string) => void>(() => undefined);
   const automaticStartAttemptedRef = useRef(false);
   const cartCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousCartItemCountRef = useRef<number | null>(null);
 
   const cartItemCount = cart?.items.reduce((total, item) => total + item.quantity, 0) ?? 0;
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!cart) return;
+    const previousCount = previousCartItemCountRef.current;
+    previousCartItemCountRef.current = cartItemCount;
+    if (
+      previousCount !== null
+      && cartItemCount > previousCount
+      && window.matchMedia("(max-width: 760px)").matches
+    ) {
+      setCartOpen(true);
+    }
+  }, [cart, cartItemCount]);
 
   useEffect(() => {
     if (!cartOpen) return;
