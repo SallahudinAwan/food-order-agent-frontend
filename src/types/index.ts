@@ -1,0 +1,10 @@
+export type Product = {id:number; name:string; description:string; price:string; category:string; is_available:boolean};
+export type CartItem = {id:number; product_id:number; name:string; quantity:number; unit_price:string; line_total:string};
+export type Cart = {id:number; session_id:string; items:CartItem[]; subtotal:string; total:string};
+export type OrderResult = {success:true; order_number:string; status:string; total:string};
+export type OrderHistoryItem = {name:string; quantity:number; unit_price:string; line_total:string};
+export type PastOrder = {order_number:string; status:string; total:string; created_at:string; items:OrderHistoryItem[]};
+export type AgentResponse = {reply:string; speech_reply:string; products:Product[]; cart:Cart; orders:PastOrder[]; order_placed:boolean; tools_used:string[]};
+export type ConnectionState = "disconnected"|"connecting"|"listening"|"speaking"|"error";
+export type TranscriptLine = {id:string; role:"user"|"assistant"; text:string; products?:Product[]};
+export type SpeechLanguage = "en-PK"|"ur-PK";

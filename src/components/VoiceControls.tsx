@@ -1,0 +1,2 @@
+import type { ConnectionState } from "../types";
+export function VoiceControls({state,onStart,onStop}:{state:ConnectionState;onStart:()=>void;onStop:()=>void}){const active=state!=="disconnected"&&state!=="error";return <div className="controls"><button className="primary" disabled={active} onClick={onStart}>Start listening</button><button className="secondary" disabled={!active} onClick={onStop}>Pause listening</button></div>}

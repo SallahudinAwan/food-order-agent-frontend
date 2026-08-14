@@ -1,0 +1,340 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "./api/client";
+import { Cart } from "./components/Cart";
+import { ConnectionStatus } from "./components/ConnectionStatus";
+import { QuestionInput } from "./components/QuestionInput";
+import { PastOrders } from "./components/PastOrders";
+import { ThinkingOverlay } from "./components/ThinkingOverlay";
+import { Transcript } from "./components/Transcript";
+import { VoiceControls } from "./components/VoiceControls";
+import type { Cart as CartType, ConnectionState, PastOrder, SpeechLanguage, TranscriptLine } from "./types";
+import { BrowserSpeechInput } from "./voice/speech";
+import { detectLanguage } from "./voice/language";
+
+const STORAGE_KEY = "voice_order_session_id";
+const CUSTOMER_STORAGE_KEY = "voice_order_customer_id";
+const LANGUAGE_STORAGE_KEY = "voice_order_detected_language";
+
+const newSession = () => {
+  const id = crypto.randomUUID();
+  localStorage.setItem(STORAGE_KEY, id);
+  return id;
+};
+
+const initialSession = () => localStorage.getItem(STORAGE_KEY) || newSession();
+const initialCustomer = () => {
+  const existing = localStorage.getItem(CUSTOMER_STORAGE_KEY);
+  if (existing) return existing;
+  const id = crypto.randomUUID();
+  localStorage.setItem(CUSTOMER_STORAGE_KEY, id);
+  return id;
+};
+
+const initialLanguage = (): SpeechLanguage => {
+  const saved = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+  if (saved === "en-PK" || saved === "ur-PK") return saved;
+  return navigator.language.toLowerCase().startsWith("ur") ? "ur-PK" : "en-PK";
+};
+
+let activeAudio: HTMLAudioElement | null = null;
+let activeAudioUrl = "";
+let speechGeneration = 0;
+
+function stopSpeaking(): void {
+  speechGeneration += 1;
+  window.speechSynthesis?.cancel();
+  activeAudio?.pause();
+  activeAudio = null;
+  if (activeAudioUrl) URL.revokeObjectURL(activeAudioUrl);
+  activeAudioUrl = "";
+}
+
+function availableVoices(): Promise<SpeechSynthesisVoice[]> {
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length) return Promise.resolve(voices);
+  return new Promise((resolve) => {
+    const finish = () => {
+      window.speechSynthesis.removeEventListener("voiceschanged", finish);
+      resolve(window.speechSynthesis.getVoices());
+    };
+    window.speechSynthesis.addEventListener("voiceschanged", finish, { once: true });
+    window.setTimeout(finish, 1000);
+  });
+}
+
+async function browserSpeak(text: string, language: SpeechLanguage, requireMatchingVoice = false, generation = speechGeneration): Promise<void> {
+  if (!("speechSynthesis" in window)) throw new Error("Speech synthesis is not supported in this browser.");
+  const voices = await availableVoices();
+  if (generation !== speechGeneration) return;
+  const matchingVoice = voices.find((voice) => voice.lang.toLowerCase().startsWith(language.slice(0, 2)));
+  if (requireMatchingVoice && !matchingVoice) throw new Error("No Urdu browser voice is installed.");
+  return new Promise((resolve) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = language;
+    if (matchingVoice) utterance.voice = matchingVoice;
+    utterance.rate = 1;
+    utterance.onend = () => resolve();
+    utterance.onerror = () => resolve();
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  });
+}
+
+async function speak(text: string): Promise<void> {
+  stopSpeaking();
+  const generation = speechGeneration;
+  const isUrdu = /[\u0600-\u06FF]/.test(text);
+  if (!isUrdu) return browserSpeak(text, "en-PK", false, generation);
+
+  try {
+    const blob = await api.synthesizeSpeech(text, "ur-PK");
+    if (generation !== speechGeneration) return;
+    activeAudioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(activeAudioUrl);
+    activeAudio = audio;
+    await new Promise<void>((resolve, reject) => {
+      audio.onended = () => resolve();
+      audio.onerror = () => reject(new Error("The Urdu audio could not be played."));
+      void audio.play().catch(reject);
+    });
+    activeAudio = null;
+    URL.revokeObjectURL(activeAudioUrl);
+    activeAudioUrl = "";
+  } catch (backendError) {
+    try {
+      if (generation !== speechGeneration) return;
+      await browserSpeak(text, "ur-PK", true, generation);
+    } catch {
+      throw backendError;
+    }
+  }
+}
+
+const waitingAnnouncements: Record<SpeechLanguage, string[]> = {
+  "en-PK": [
+    "Please wait. I am thinking and checking your order now.",
+    "I am still working on your request. Please wait a little longer.",
+    "Thank you for waiting. I am preparing your answer.",
+  ],
+  "ur-PK": [
+    "براہ کرم انتظار کریں۔ میں آپ کے آرڈر کے بارے میں سوچ رہا ہوں اور معلومات چیک کر رہا ہوں۔",
+    "میں ابھی آپ کی درخواست پر کام کر رہا ہوں۔ براہ کرم تھوڑا مزید انتظار کریں۔",
+    "انتظار کرنے کا شکریہ۔ میں آپ کا جواب تیار کر رہا ہوں۔",
+  ],
+};
+
+export default function App() {
+  const [sessionId, setSessionId] = useState(initialSession);
+  const customerIdRef = useRef(initialCustomer());
+  const sessionIdRef = useRef(sessionId);
+  const [cart, setCart] = useState<CartType | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [orders, setOrders] = useState<PastOrder[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [state, setState] = useState<ConnectionState>("disconnected");
+  const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>(initialLanguage);
+  const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  const [error, setError] = useState("");
+  const voiceRef = useRef<BrowserSpeechInput | null>(null);
+  const voiceActiveRef = useRef(false);
+  const busyRef = useRef(false);
+  const requestGenerationRef = useRef(0);
+  const processQuestionRef = useRef<(question: string) => void>(() => undefined);
+  const automaticStartAttemptedRef = useRef(false);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  const refreshCart = useCallback(async () => {
+    setLoading(true);
+    try {
+      setCart(await api.getCart(sessionIdRef.current));
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load cart.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const refreshOrders = useCallback(async () => {
+    setOrdersLoading(true);
+    try {
+      setOrders(await api.getOrders(customerIdRef.current));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not load past orders.");
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCart();
+    void refreshOrders();
+  }, [refreshCart, refreshOrders, sessionId]);
+
+  const processQuestion = useCallback(async (question: string) => {
+    const cleaned = question.trim();
+    if (!cleaned || busyRef.current) return;
+    const questionLanguage = detectLanguage(cleaned);
+    setSpeechLanguage(questionLanguage);
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, questionLanguage);
+
+    busyRef.current = true;
+    const generation = ++requestGenerationRef.current;
+    const voice = voiceRef.current;
+    voice?.pause();
+    stopSpeaking();
+    setError("");
+    setState("connecting");
+    setTranscript((lines) => [...lines, { id: crypto.randomUUID(), role: "user", text: cleaned }]);
+    const announcements = waitingAnnouncements[questionLanguage];
+    let announcementIndex = 0;
+    void speak(announcements[announcementIndex]).catch(() => undefined);
+    const waitingTimer = window.setInterval(() => {
+      announcementIndex = (announcementIndex + 1) % announcements.length;
+      void speak(announcements[announcementIndex]).catch(() => undefined);
+    }, 8000);
+
+    try {
+      const response = await api.askAgent(sessionIdRef.current, customerIdRef.current, cleaned);
+      window.clearInterval(waitingTimer);
+      stopSpeaking();
+      if (generation !== requestGenerationRef.current) return;
+      setTranscript((lines) => [
+        ...lines,
+        { id: crypto.randomUUID(), role: "assistant", text: response.reply, products: response.products },
+      ]);
+      setCart(response.cart);
+      setOrders(response.orders);
+
+      if (response.order_placed) {
+        const id = newSession();
+        sessionIdRef.current = id;
+        setSessionId(id);
+      }
+
+      setState("speaking");
+      try {
+        await speak(response.speech_reply);
+      } catch (speechError) {
+        setError(
+          speechError instanceof Error
+            ? `The Urdu answer is displayed, but audio failed: ${speechError.message}`
+            : "The Urdu answer is displayed, but its audio could not be played.",
+        );
+      }
+      if (generation !== requestGenerationRef.current) return;
+      if (voice && voiceActiveRef.current && voiceRef.current === voice) {
+        voice.setLanguage(questionLanguage);
+        voice.resume();
+      } else {
+        setState("disconnected");
+      }
+    } catch (caught) {
+      window.clearInterval(waitingTimer);
+      stopSpeaking();
+      if (generation !== requestGenerationRef.current) return;
+      const message = caught instanceof Error ? caught.message : "I could not process your order right now. Please try again.";
+      setError(message);
+      voice?.stop();
+      voiceRef.current = null;
+      voiceActiveRef.current = false;
+      setState("error");
+    } finally {
+      window.clearInterval(waitingTimer);
+      if (generation === requestGenerationRef.current) busyRef.current = false;
+    }
+  }, []);
+
+  processQuestionRef.current = (question) => void processQuestion(question);
+
+  const start = useCallback(() => {
+    setError("");
+    const voice = new BrowserSpeechInput(
+      {
+        onTranscript: (text) => processQuestionRef.current(text),
+        onError: (message) => {
+          setError(message);
+          voiceActiveRef.current = false;
+          voiceRef.current?.stop();
+          voiceRef.current = null;
+          setState("error");
+        },
+        onListening: () => setState("listening"),
+      },
+      speechLanguage,
+    );
+    voiceRef.current = voice;
+    voiceActiveRef.current = true;
+    try {
+      voice.start();
+    } catch (caught) {
+      voice.stop();
+      voiceRef.current = null;
+      voiceActiveRef.current = false;
+      setError(caught instanceof Error ? caught.message : "Could not start voice recognition.");
+      setState("error");
+    }
+  }, [speechLanguage]);
+
+  useEffect(() => {
+    if (automaticStartAttemptedRef.current) return;
+    const timer = window.setTimeout(() => {
+      automaticStartAttemptedRef.current = true;
+      start();
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [start]);
+
+  const stop = () => {
+    requestGenerationRef.current += 1;
+    busyRef.current = false;
+    voiceActiveRef.current = false;
+    voiceRef.current?.stop();
+    voiceRef.current = null;
+    stopSpeaking();
+    setState("disconnected");
+  };
+
+  useEffect(() => () => {
+    voiceRef.current?.stop();
+    stopSpeaking();
+  }, []);
+
+  return (
+    <main className="app-shell">
+      <ThinkingOverlay language={speechLanguage} visible={state === "connecting"} />
+      <header className="app-header">
+        <div className="brand-copy">
+          <div className="eyebrow">VOICE ORDERING</div>
+          <h1>What would you like today?</h1>
+          <p>Speak naturally or type your order in English or Urdu.</p>
+        </div>
+        <div className="order-entry">
+          <div className="status-row">
+            <ConnectionStatus state={state} />
+            <span aria-live="polite" className="detected-language">
+              {speechLanguage === "ur-PK" ? "اردو" : "English"}
+            </span>
+          </div>
+          <VoiceControls state={state} onStart={start} onStop={stop} />
+          <QuestionInput state={state} onSubmit={(question) => void processQuestion(question)} />
+        </div>
+        {error && <div className="error-banner">{error}</div>}
+      </header>
+      <div className="grid dashboard-grid">
+        <Cart cart={cart} loading={loading} />
+        <Transcript
+          disabled={state === "connecting" || state === "speaking"}
+          lines={transcript}
+          onAddProduct={(name) => void processQuestion(
+            speechLanguage === "ur-PK" ? `${name} ایک عدد آرڈر میں شامل کریں` : `Add one ${name} to my order`,
+          )}
+        />
+        <PastOrders orders={orders} loading={ordersLoading} />
+      </div>
+    </main>
+  );
+}
