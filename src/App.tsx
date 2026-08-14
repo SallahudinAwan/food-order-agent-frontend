@@ -14,6 +14,9 @@ import { detectLanguage } from "./voice/language";
 const STORAGE_KEY = "voice_order_session_id";
 const CUSTOMER_STORAGE_KEY = "voice_order_customer_id";
 const LANGUAGE_STORAGE_KEY = "voice_order_detected_language";
+const LANGUAGE_PREFERENCE_STORAGE_KEY = "voice_order_language_preference";
+
+type LanguagePreference = "auto" | SpeechLanguage;
 
 const newSession = () => {
   const id = crypto.randomUUID();
@@ -30,7 +33,14 @@ const initialCustomer = () => {
   return id;
 };
 
+const initialLanguagePreference = (): LanguagePreference => {
+  const saved = localStorage.getItem(LANGUAGE_PREFERENCE_STORAGE_KEY);
+  return saved === "en-PK" || saved === "ur-PK" ? saved : "auto";
+};
+
 const initialLanguage = (): SpeechLanguage => {
+  const preference = initialLanguagePreference();
+  if (preference !== "auto") return preference;
   const saved = localStorage.getItem(LANGUAGE_STORAGE_KEY);
   if (saved === "en-PK" || saved === "ur-PK") return saved;
   return navigator.language.toLowerCase().startsWith("ur") ? "ur-PK" : "en-PK";
@@ -134,6 +144,7 @@ export default function App() {
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [state, setState] = useState<ConnectionState>("disconnected");
   const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>(initialLanguage);
+  const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(initialLanguagePreference);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [error, setError] = useState("");
   const voiceRef = useRef<BrowserSpeechInput | null>(null);
@@ -144,12 +155,17 @@ export default function App() {
   const automaticStartAttemptedRef = useRef(false);
   const cartCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousCartItemCountRef = useRef<number | null>(null);
+  const languagePreferenceRef = useRef(languagePreference);
 
   const cartItemCount = cart?.items.reduce((total, item) => total + item.quantity, 0) ?? 0;
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    languagePreferenceRef.current = languagePreference;
+  }, [languagePreference]);
 
   useEffect(() => {
     if (!cart) return;
@@ -209,7 +225,8 @@ export default function App() {
   const processQuestion = useCallback(async (question: string) => {
     const cleaned = question.trim();
     if (!cleaned || busyRef.current) return;
-    const questionLanguage = detectLanguage(cleaned);
+    const preference = languagePreferenceRef.current;
+    const questionLanguage = preference === "auto" ? detectLanguage(cleaned) : preference;
     setSpeechLanguage(questionLanguage);
     localStorage.setItem(LANGUAGE_STORAGE_KEY, questionLanguage);
 
@@ -230,7 +247,7 @@ export default function App() {
     }, 8000);
 
     try {
-      const response = await api.askAgent(sessionIdRef.current, customerIdRef.current, cleaned);
+      const response = await api.askAgent(sessionIdRef.current, customerIdRef.current, cleaned, questionLanguage);
       window.clearInterval(waitingTimer);
       stopSpeaking();
       if (generation !== requestGenerationRef.current) return;
@@ -330,6 +347,22 @@ export default function App() {
     setState("disconnected");
   };
 
+  const changeLanguagePreference = (preference: LanguagePreference) => {
+    setLanguagePreference(preference);
+    languagePreferenceRef.current = preference;
+    localStorage.setItem(LANGUAGE_PREFERENCE_STORAGE_KEY, preference);
+    if (preference === "auto") return;
+
+    setSpeechLanguage(preference);
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, preference);
+    const voice = voiceRef.current;
+    if (voice && voiceActiveRef.current) {
+      voice.pause();
+      voice.setLanguage(preference);
+      voice.resume();
+    }
+  };
+
   useEffect(() => () => {
     voiceRef.current?.stop();
     stopSpeaking();
@@ -364,9 +397,19 @@ export default function App() {
         <div className="order-entry">
           <div className="status-row">
             <ConnectionStatus state={state} />
-            <span aria-live="polite" className="detected-language">
-              {speechLanguage === "ur-PK" ? "اردو" : "English"}
-            </span>
+            <label className="language-selector">
+              <span className="sr-only">Order language</span>
+              <select
+                aria-label="Order language"
+                disabled={state === "connecting" || state === "speaking"}
+                onChange={(event) => changeLanguagePreference(event.target.value as LanguagePreference)}
+                value={languagePreference}
+              >
+                <option value="auto">Auto · {speechLanguage === "ur-PK" ? "اردو" : "English"}</option>
+                <option value="en-PK">English</option>
+                <option value="ur-PK">اردو</option>
+              </select>
+            </label>
           </div>
           <VoiceControls state={state} onStart={start} onStop={stop} />
           <QuestionInput
