@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api/client";
 import { Cart } from "./components/Cart";
 import { ConnectionStatus } from "./components/ConnectionStatus";
+import { ListeningOverlay } from "./components/ListeningOverlay";
 import { QuestionInput } from "./components/QuestionInput";
 import { PastOrders } from "./components/PastOrders";
 import { ThinkingOverlay } from "./components/ThinkingOverlay";
@@ -139,6 +140,7 @@ export default function App() {
   const sessionIdRef = useRef(sessionId);
   const [cart, setCart] = useState<CartType | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
+  const [ordersOpen, setOrdersOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [orders, setOrders] = useState<PastOrder[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
@@ -147,13 +149,18 @@ export default function App() {
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(initialLanguagePreference);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [error, setError] = useState("");
+  const [heardText, setHeardText] = useState("");
+  const [voiceDetected, setVoiceDetected] = useState(false);
   const voiceRef = useRef<BrowserSpeechInput | null>(null);
   const voiceActiveRef = useRef(false);
   const busyRef = useRef(false);
   const requestGenerationRef = useRef(0);
   const processQuestionRef = useRef<(question: string) => void>(() => undefined);
+  const startListeningRef = useRef<() => void>(() => undefined);
+  const voiceModeEnabledRef = useRef(true);
   const automaticStartAttemptedRef = useRef(false);
   const cartCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const ordersCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousCartItemCountRef = useRef<number | null>(null);
   const languagePreferenceRef = useRef(languagePreference);
 
@@ -181,18 +188,22 @@ export default function App() {
   }, [cart, cartItemCount]);
 
   useEffect(() => {
-    if (!cartOpen) return;
+    if (!cartOpen && !ordersOpen) return;
     document.body.classList.add("cart-drawer-open");
-    cartCloseButtonRef.current?.focus();
+    if (cartOpen) cartCloseButtonRef.current?.focus();
+    else ordersCloseButtonRef.current?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setCartOpen(false);
+      if (event.key === "Escape") {
+        setCartOpen(false);
+        setOrdersOpen(false);
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.body.classList.remove("cart-drawer-open");
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [cartOpen]);
+  }, [cartOpen, ordersOpen]);
 
   const refreshCart = useCallback(async () => {
     setLoading(true);
@@ -232,8 +243,11 @@ export default function App() {
 
     busyRef.current = true;
     const generation = ++requestGenerationRef.current;
-    const voice = voiceRef.current;
-    voice?.pause();
+    voiceRef.current?.stop();
+    voiceRef.current = null;
+    voiceActiveRef.current = false;
+    setHeardText("");
+    setVoiceDetected(false);
     stopSpeaking();
     setError("");
     setState("connecting");
@@ -251,9 +265,10 @@ export default function App() {
       window.clearInterval(waitingTimer);
       stopSpeaking();
       if (generation !== requestGenerationRef.current) return;
+      const placedOrder = response.order_placed ? response.orders[0] : undefined;
       setTranscript((lines) => [
         ...lines,
-        { id: crypto.randomUUID(), role: "assistant", text: response.reply, products: response.products },
+        { id: crypto.randomUUID(), role: "assistant", text: response.reply, products: response.products, order: placedOrder },
       ]);
       setCart(response.cart);
       setOrders(response.orders);
@@ -275,11 +290,9 @@ export default function App() {
         );
       }
       if (generation !== requestGenerationRef.current) return;
-      if (voice && voiceActiveRef.current && voiceRef.current === voice) {
-        voice.setLanguage(questionLanguage);
-        voice.resume();
-      } else {
-        setState("disconnected");
+      setState("disconnected");
+      if (voiceModeEnabledRef.current) {
+        window.setTimeout(() => startListeningRef.current(), 0);
       }
     } catch (caught) {
       window.clearInterval(waitingTimer);
@@ -287,7 +300,6 @@ export default function App() {
       if (generation !== requestGenerationRef.current) return;
       const message = caught instanceof Error ? caught.message : "I could not process your order right now. Please try again.";
       setError(message);
-      voice?.stop();
       voiceRef.current = null;
       voiceActiveRef.current = false;
       setState("error");
@@ -300,18 +312,45 @@ export default function App() {
   processQuestionRef.current = (question) => void processQuestion(question);
 
   const start = useCallback(() => {
+    if (busyRef.current || voiceActiveRef.current) return;
+    voiceModeEnabledRef.current = true;
     setError("");
-    const voice = new BrowserSpeechInput(
+    setHeardText("");
+    setVoiceDetected(false);
+    let voice: BrowserSpeechInput;
+    voice = new BrowserSpeechInput(
       {
-        onTranscript: (text) => processQuestionRef.current(text),
+        onTranscript: (text) => {
+          if (voiceRef.current !== voice) return;
+          voiceActiveRef.current = false;
+          voiceRef.current = null;
+          setVoiceDetected(false);
+          processQuestionRef.current(text);
+        },
         onError: (message) => {
+          if (voiceRef.current !== voice) return;
+          voiceModeEnabledRef.current = false;
           setError(message);
           voiceActiveRef.current = false;
-          voiceRef.current?.stop();
           voiceRef.current = null;
+          setHeardText("");
+          setVoiceDetected(false);
           setState("error");
         },
         onListening: () => setState("listening"),
+        onInterimTranscript: setHeardText,
+        onSpeechChange: setVoiceDetected,
+        onEnd: () => {
+          if (voiceRef.current !== voice) return;
+          voiceActiveRef.current = false;
+          voiceRef.current = null;
+          setHeardText("");
+          setVoiceDetected(false);
+          setState("disconnected");
+          if (voiceModeEnabledRef.current) {
+            window.setTimeout(() => startListeningRef.current(), 250);
+          }
+        },
       },
       speechLanguage,
     );
@@ -320,6 +359,7 @@ export default function App() {
     try {
       voice.start();
     } catch (caught) {
+      voiceModeEnabledRef.current = false;
       voice.stop();
       voiceRef.current = null;
       voiceActiveRef.current = false;
@@ -328,23 +368,30 @@ export default function App() {
     }
   }, [speechLanguage]);
 
+  startListeningRef.current = start;
+
   useEffect(() => {
     if (automaticStartAttemptedRef.current) return;
     const timer = window.setTimeout(() => {
       automaticStartAttemptedRef.current = true;
-      start();
+      startListeningRef.current();
     }, 350);
     return () => window.clearTimeout(timer);
   }, [start]);
 
   const stop = () => {
+    const message = heardText.trim();
+    voiceModeEnabledRef.current = false;
     requestGenerationRef.current += 1;
     busyRef.current = false;
     voiceActiveRef.current = false;
     voiceRef.current?.stop();
     voiceRef.current = null;
+    setHeardText("");
+    setVoiceDetected(false);
     stopSpeaking();
     setState("disconnected");
+    if (message) processQuestionRef.current(message);
   };
 
   const changeLanguagePreference = (preference: LanguagePreference) => {
@@ -357,19 +404,32 @@ export default function App() {
     localStorage.setItem(LANGUAGE_STORAGE_KEY, preference);
     const voice = voiceRef.current;
     if (voice && voiceActiveRef.current) {
-      voice.pause();
-      voice.setLanguage(preference);
-      voice.resume();
+      voice.stop();
+      voiceRef.current = null;
+      voiceActiveRef.current = false;
+      setHeardText("");
+      setVoiceDetected(false);
+      setState("disconnected");
+      if (voiceModeEnabledRef.current) {
+        window.setTimeout(() => startListeningRef.current(), 0);
+      }
     }
   };
 
   useEffect(() => () => {
+    voiceModeEnabledRef.current = false;
     voiceRef.current?.stop();
     stopSpeaking();
   }, []);
 
   return (
     <main className="app-shell">
+      <ListeningOverlay
+        heardText={heardText}
+        onStop={stop}
+        speaking={voiceDetected}
+        visible={state === "listening" && voiceDetected}
+      />
       <ThinkingOverlay language={speechLanguage} visible={state === "connecting"} />
       <header className="app-header">
         <div className="brand-area">
@@ -378,21 +438,37 @@ export default function App() {
             <h1>What would you like today?</h1>
             <p>Speak naturally or type your order in English or Urdu.</p>
           </div>
-          <button
-            aria-expanded={cartOpen}
-            aria-label={`Open cart, ${cartItemCount} ${cartItemCount === 1 ? "item" : "items"}`}
-            className="mobile-cart-button"
-            onClick={() => setCartOpen(true)}
-            type="button"
-          >
-            <svg aria-hidden="true" viewBox="0 0 24 24">
-              <path d="M3 4h2l2.2 10.1a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L21 8H7" />
-              <circle cx="10" cy="20" r="1.3" />
-              <circle cx="18" cy="20" r="1.3" />
-            </svg>
-            <span>Cart</span>
-            <strong>{cartItemCount}</strong>
-          </button>
+          <div className="mobile-header-actions">
+            <button
+              aria-expanded={ordersOpen}
+              aria-label={`Open past orders, ${orders.length} ${orders.length === 1 ? "order" : "orders"}`}
+              className="mobile-cart-button mobile-orders-button"
+              onClick={() => { setCartOpen(false); setOrdersOpen(true); }}
+              type="button"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M4 7h16M6 3h12a2 2 0 0 1 2 2v15H4V5a2 2 0 0 1 2-2Z" />
+                <path d="M8 11h8M8 15h6" />
+              </svg>
+              <span>Orders</span>
+              <strong>{orders.length}</strong>
+            </button>
+            <button
+              aria-expanded={cartOpen}
+              aria-label={`Open cart, ${cartItemCount} ${cartItemCount === 1 ? "item" : "items"}`}
+              className="mobile-cart-button"
+              onClick={() => { setOrdersOpen(false); setCartOpen(true); }}
+              type="button"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M3 4h2l2.2 10.1a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L21 8H7" />
+                <circle cx="10" cy="20" r="1.3" />
+                <circle cx="18" cy="20" r="1.3" />
+              </svg>
+              <span>Cart</span>
+              <strong>{cartItemCount}</strong>
+            </button>
+          </div>
         </div>
         <div className="order-entry">
           <div className="status-row">
@@ -405,7 +481,7 @@ export default function App() {
                 onChange={(event) => changeLanguagePreference(event.target.value as LanguagePreference)}
                 value={languagePreference}
               >
-                <option value="auto">Auto · {speechLanguage === "ur-PK" ? "اردو" : "English"}</option>
+                <option value="auto">Auto</option>
                 <option value="en-PK">English</option>
                 <option value="ur-PK">اردو</option>
               </select>
@@ -430,7 +506,7 @@ export default function App() {
             speechLanguage === "ur-PK" ? `${name} ایک عدد آرڈر میں شامل کریں` : `Add one ${name} to my order`,
           )}
         />
-        <PastOrders orders={orders} loading={ordersLoading} />
+        <PastOrders className="desktop-orders" orders={orders} loading={ordersLoading} />
       </div>
       {cartOpen && (
         <div className="cart-drawer-layer">
@@ -451,6 +527,33 @@ export default function App() {
               <span aria-hidden="true">×</span>
             </button>
             <Cart cart={cart} className="drawer-cart" headingId="mobile-cart-title" loading={loading} />
+          </aside>
+        </div>
+      )}
+      {ordersOpen && (
+        <div className="cart-drawer-layer">
+          <button
+            aria-label="Close past orders"
+            className="cart-drawer-backdrop"
+            onClick={() => setOrdersOpen(false)}
+            type="button"
+          />
+          <aside aria-labelledby="mobile-orders-title" aria-modal="true" className="cart-drawer" role="dialog">
+            <button
+              aria-label="Close past orders"
+              className="cart-drawer-close"
+              onClick={() => setOrdersOpen(false)}
+              ref={ordersCloseButtonRef}
+              type="button"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+            <PastOrders
+              className="drawer-orders"
+              headingId="mobile-orders-title"
+              loading={ordersLoading}
+              orders={orders}
+            />
           </aside>
         </div>
       )}

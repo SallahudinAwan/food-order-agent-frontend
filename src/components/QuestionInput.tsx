@@ -14,7 +14,7 @@ export function QuestionInput({
 }) {
   const [question, setQuestion] = useState("");
   const enabled = state !== "connecting" && state !== "speaking";
-  const voiceActive = state !== "disconnected" && state !== "error";
+  const voiceActive = state === "listening";
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -41,8 +41,9 @@ export function QuestionInput({
         </svg>
       </button>
       <button
-        aria-label={voiceActive ? "Pause listening" : "Start listening"}
+        aria-label={voiceActive ? "Stop listening" : "Start listening"}
         className={`mobile-voice-button${voiceActive ? " is-active" : ""}`}
+        disabled={!enabled}
         onClick={voiceActive ? onVoiceStop : onVoiceStart}
         type="button"
       >

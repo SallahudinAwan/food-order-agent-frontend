@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { TranscriptLine } from "../types";
+import { OrderCard } from "./PastOrders";
 
 const money = (value: string) =>
   new Intl.NumberFormat("en-PK", { style: "currency", currency: "PKR", maximumFractionDigits: 0 })
@@ -57,6 +58,12 @@ export function Transcript({
                       </div>
                     </article>
                   ))}
+                </div>
+              )}
+              {line.order && (
+                <div className="chat-order-confirmation">
+                  <strong className="chat-order-title">Order placed successfully</strong>
+                  <OrderCard className="chat-order-card" order={line.order} />
                 </div>
               )}
             </div>
