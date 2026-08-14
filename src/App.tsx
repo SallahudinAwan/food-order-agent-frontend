@@ -369,7 +369,12 @@ export default function App() {
             </span>
           </div>
           <VoiceControls state={state} onStart={start} onStop={stop} />
-          <QuestionInput state={state} onSubmit={(question) => void processQuestion(question)} />
+          <QuestionInput
+            onSubmit={(question) => void processQuestion(question)}
+            onVoiceStart={start}
+            onVoiceStop={stop}
+            state={state}
+          />
         </div>
         {error && <div className="error-banner">{error}</div>}
       </header>
