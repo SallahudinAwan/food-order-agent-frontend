@@ -5,11 +5,21 @@ const money = (value: string) =>
     .format(Number(value))
     .replace("PKR", "Rs.");
 
-export function Cart({ cart, loading }: { cart: CartType | null; loading: boolean }) {
+export function Cart({
+  cart,
+  loading,
+  className = "",
+  headingId,
+}: {
+  cart: CartType | null;
+  loading: boolean;
+  className?: string;
+  headingId?: string;
+}) {
   return (
-    <section className="panel cart">
+    <section className={`panel cart ${className}`.trim()}>
       <div className="panel-title">
-        <h2>Current cart</h2>
+        <h2 id={headingId}>Current cart</h2>
         {loading && <span className="muted">Refreshing...</span>}
       </div>
       {!cart?.items.length ? (

@@ -128,6 +128,7 @@ export default function App() {
   const customerIdRef = useRef(initialCustomer());
   const sessionIdRef = useRef(sessionId);
   const [cart, setCart] = useState<CartType | null>(null);
+  const [cartOpen, setCartOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [orders, setOrders] = useState<PastOrder[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
@@ -141,10 +142,27 @@ export default function App() {
   const requestGenerationRef = useRef(0);
   const processQuestionRef = useRef<(question: string) => void>(() => undefined);
   const automaticStartAttemptedRef = useRef(false);
+  const cartCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  const cartItemCount = cart?.items.reduce((total, item) => total + item.quantity, 0) ?? 0;
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!cartOpen) return;
+    document.body.classList.add("cart-drawer-open");
+    cartCloseButtonRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCartOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.classList.remove("cart-drawer-open");
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [cartOpen]);
 
   const refreshCart = useCallback(async () => {
     setLoading(true);
@@ -307,10 +325,27 @@ export default function App() {
     <main className="app-shell">
       <ThinkingOverlay language={speechLanguage} visible={state === "connecting"} />
       <header className="app-header">
-        <div className="brand-copy">
-          <div className="eyebrow">VOICE ORDERING</div>
-          <h1>What would you like today?</h1>
-          <p>Speak naturally or type your order in English or Urdu.</p>
+        <div className="brand-area">
+          <div className="brand-copy">
+            <div className="eyebrow">VOICE ORDERING</div>
+            <h1>What would you like today?</h1>
+            <p>Speak naturally or type your order in English or Urdu.</p>
+          </div>
+          <button
+            aria-expanded={cartOpen}
+            aria-label={`Open cart, ${cartItemCount} ${cartItemCount === 1 ? "item" : "items"}`}
+            className="mobile-cart-button"
+            onClick={() => setCartOpen(true)}
+            type="button"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M3 4h2l2.2 10.1a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L21 8H7" />
+              <circle cx="10" cy="20" r="1.3" />
+              <circle cx="18" cy="20" r="1.3" />
+            </svg>
+            <span>Cart</span>
+            <strong>{cartItemCount}</strong>
+          </button>
         </div>
         <div className="order-entry">
           <div className="status-row">
@@ -325,7 +360,7 @@ export default function App() {
         {error && <div className="error-banner">{error}</div>}
       </header>
       <div className="grid dashboard-grid">
-        <Cart cart={cart} loading={loading} />
+        <Cart cart={cart} className="desktop-cart" loading={loading} />
         <Transcript
           disabled={state === "connecting" || state === "speaking"}
           lines={transcript}
@@ -335,6 +370,28 @@ export default function App() {
         />
         <PastOrders orders={orders} loading={ordersLoading} />
       </div>
+      {cartOpen && (
+        <div className="cart-drawer-layer">
+          <button
+            aria-label="Close cart"
+            className="cart-drawer-backdrop"
+            onClick={() => setCartOpen(false)}
+            type="button"
+          />
+          <aside aria-labelledby="mobile-cart-title" aria-modal="true" className="cart-drawer" role="dialog">
+            <button
+              aria-label="Close cart"
+              className="cart-drawer-close"
+              onClick={() => setCartOpen(false)}
+              ref={cartCloseButtonRef}
+              type="button"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+            <Cart cart={cart} className="drawer-cart" headingId="mobile-cart-title" loading={loading} />
+          </aside>
+        </div>
+      )}
     </main>
   );
 }
