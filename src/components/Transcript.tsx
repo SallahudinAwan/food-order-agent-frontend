@@ -1,4 +1,6 @@
+import { useEffect, useRef } from "react";
 import type { TranscriptLine } from "../types";
+import { OrderCard } from "./PastOrders";
 
 const money = (value: string) =>
   new Intl.NumberFormat("en-PK", { style: "currency", currency: "PKR", maximumFractionDigits: 0 })
@@ -14,13 +16,27 @@ export function Transcript({
   disabled: boolean;
   onAddProduct: (name: string) => void;
 }) {
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const messages = messagesRef.current;
+    if (!messages || !lines.length) return;
+    const frame = window.requestAnimationFrame(() => {
+      messages.scrollTo({
+        top: messages.scrollHeight,
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [lines]);
+
   return (
     <section className="panel transcript">
       <h2>Conversation</h2>
       {lines.length === 0 ? (
         <p className="empty">Your conversation will appear here.</p>
       ) : (
-        <div className="messages">
+        <div aria-live="polite" className="messages" ref={messagesRef}>
           {lines.map((line) => (
             <div className={`message ${line.role}`} key={line.id}>
               <span>{line.role === "user" ? "You" : "Order assistant"}</span>
@@ -44,8 +60,15 @@ export function Transcript({
                   ))}
                 </div>
               )}
+              {line.order && (
+                <div className="chat-order-confirmation">
+                  <strong className="chat-order-title">Order placed successfully</strong>
+                  <OrderCard className="chat-order-card" order={line.order} />
+                </div>
+              )}
             </div>
           ))}
+          <div aria-hidden="true" className="conversation-end" />
         </div>
       )}
     </section>

@@ -6,5 +6,5 @@ export type OrderHistoryItem = {name:string; quantity:number; unit_price:string;
 export type PastOrder = {order_number:string; status:string; total:string; created_at:string; items:OrderHistoryItem[]};
 export type AgentResponse = {reply:string; speech_reply:string; products:Product[]; cart:Cart; orders:PastOrder[]; order_placed:boolean; tools_used:string[]};
 export type ConnectionState = "disconnected"|"connecting"|"listening"|"speaking"|"error";
-export type TranscriptLine = {id:string; role:"user"|"assistant"; text:string; products?:Product[]};
+export type TranscriptLine = {id:string; role:"user"|"assistant"; text:string; products?:Product[]; order?:PastOrder};
 export type SpeechLanguage = "en-PK"|"ur-PK";
