@@ -1,6 +1,6 @@
 # Food Order Agent Frontend
 
-Production React/Vite client for the Food Order Agent. The browser handles speech recognition and playback while all Gemini credentials and ordering logic remain in the Django backend.
+Production React/Vite client for the Food Order Agent. The browser handles speech recognition and playback while the LangChain ordering runtime, Gemini credentials, and ordering logic remain in the Django backend.
 
 ## Render deployment
 
