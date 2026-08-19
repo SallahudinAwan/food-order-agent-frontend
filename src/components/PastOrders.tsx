@@ -48,11 +48,11 @@ export function PastOrders({
   return (
     <section className={`panel orders-panel ${className}`.trim()}>
       <div className="panel-title">
-        <h2 id={headingId}>Past orders</h2>
+        <h2 id={headingId}><span aria-hidden="true" className="panel-title-icon">🧾</span> Past orders</h2>
         {loading && <span className="muted">Refreshing...</span>}
       </div>
       {!orders.length ? (
-        <p className="empty">Your completed orders will appear here.</p>
+        <div className="empty empty-state"><span aria-hidden="true">🍽️</span><p>Your delicious order history will appear here.</p></div>
       ) : (
         <div className="order-history">
           {orders.map((order) => (

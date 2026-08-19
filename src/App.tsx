@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api/client";
+import foodOrderingHero from "./assets/food-ordering-hero.png";
 import { Cart } from "./components/Cart";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { ListeningOverlay } from "./components/ListeningOverlay";
 import { QuestionInput } from "./components/QuestionInput";
 import { PastOrders } from "./components/PastOrders";
-import { ThinkingOverlay } from "./components/ThinkingOverlay";
 import { Transcript } from "./components/Transcript";
 import { VoiceControls } from "./components/VoiceControls";
 import type { Cart as CartType, ConnectionState, PastOrder, SpeechLanguage, TranscriptLine } from "./types";
@@ -49,10 +49,14 @@ const initialLanguage = (): SpeechLanguage => {
 
 let activeAudio: HTMLAudioElement | null = null;
 let activeAudioUrl = "";
+let activeSpeechCancel: (() => void) | null = null;
 let speechGeneration = 0;
 
 function stopSpeaking(): void {
   speechGeneration += 1;
+  const cancelPlayback = activeSpeechCancel;
+  activeSpeechCancel = null;
+  cancelPlayback?.();
   window.speechSynthesis?.cancel();
   activeAudio?.pause();
   activeAudio = null;
@@ -81,11 +85,19 @@ async function browserSpeak(text: string, language: SpeechLanguage, requireMatch
   if (requireMatchingVoice && !matchingVoice) throw new Error("No Urdu browser voice is installed.");
   return new Promise((resolve) => {
     const utterance = new SpeechSynthesisUtterance(text);
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (activeSpeechCancel === finish) activeSpeechCancel = null;
+      resolve();
+    };
     utterance.lang = language;
     if (matchingVoice) utterance.voice = matchingVoice;
     utterance.rate = 1;
-    utterance.onend = () => resolve();
-    utterance.onerror = () => resolve();
+    utterance.onend = finish;
+    utterance.onerror = finish;
+    activeSpeechCancel = finish;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
   });
@@ -104,9 +116,23 @@ async function speak(text: string): Promise<void> {
     const audio = new Audio(activeAudioUrl);
     activeAudio = audio;
     await new Promise<void>((resolve, reject) => {
-      audio.onended = () => resolve();
-      audio.onerror = () => reject(new Error("The Urdu audio could not be played."));
-      void audio.play().catch(reject);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (activeSpeechCancel === finish) activeSpeechCancel = null;
+        resolve();
+      };
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        if (activeSpeechCancel === finish) activeSpeechCancel = null;
+        reject(new Error("The Urdu audio could not be played."));
+      };
+      activeSpeechCancel = finish;
+      audio.onended = finish;
+      audio.onerror = fail;
+      void audio.play().catch(fail);
     });
     activeAudio = null;
     URL.revokeObjectURL(activeAudioUrl);
@@ -228,6 +254,23 @@ export default function App() {
     }
   }, []);
 
+  const changeCartItemQuantity = useCallback(async (itemId: number, quantity: number) => {
+    setLoading(true);
+    try {
+      if (quantity < 1) {
+        await api.removeItem(itemId);
+        setCart(await api.getCart(sessionIdRef.current));
+      } else {
+        setCart(await api.updateItem(itemId, quantity));
+      }
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not update the cart.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshCart();
     void refreshOrders();
@@ -339,7 +382,12 @@ export default function App() {
         },
         onListening: () => setState("listening"),
         onInterimTranscript: setHeardText,
-        onSpeechChange: setVoiceDetected,
+        onSpeechChange: (speaking) => {
+          setVoiceDetected(speaking);
+          if (speaking) {
+            setCartOpen(false);
+          }
+        },
         onEnd: () => {
           if (voiceRef.current !== voice) return;
           voiceActiveRef.current = false;
@@ -430,13 +478,17 @@ export default function App() {
         speaking={voiceDetected}
         visible={state === "listening" && voiceDetected}
       />
-      <ThinkingOverlay language={speechLanguage} visible={state === "connecting"} />
       <header className="app-header">
         <div className="brand-area">
           <div className="brand-copy">
-            <div className="eyebrow">VOICE ORDERING</div>
-            <h1>What would you like today?</h1>
-            <p>Speak naturally or type your order in English or Urdu.</p>
+            <div className="eyebrow"><span aria-hidden="true">✦</span> FRESH &amp; FAST VOICE ORDERING</div>
+            <h1>Your cravings, <em>served.</em></h1>
+            <p>Say what sounds delicious—we'll help build your perfect order.</p>
+            <div aria-label="Popular food searches" className="quick-picks">
+              <button disabled={state === "connecting" || state === "speaking"} onClick={() => void processQuestion("Show me chicken biryani")} type="button"><span aria-hidden="true">🍗</span> Biryani</button>
+              <button disabled={state === "connecting" || state === "speaking"} onClick={() => void processQuestion("Show me pizza")} type="button"><span aria-hidden="true">🍕</span> Pizza</button>
+              <button disabled={state === "connecting" || state === "speaking"} onClick={() => void processQuestion("Show me burgers")} type="button"><span aria-hidden="true">🍔</span> Burgers</button>
+            </div>
           </div>
           <div className="mobile-header-actions">
             <button
@@ -470,6 +522,13 @@ export default function App() {
             </button>
           </div>
         </div>
+        <div aria-hidden="true" className="food-hero">
+          <div className="food-hero-glow" />
+          <img alt="" src={foodOrderingHero} />
+          <span className="food-spark food-spark-one">✦</span>
+          <span className="food-spark food-spark-two">●</span>
+          <div className="fresh-badge"><span>★</span><strong>Freshly made</strong><small>Every order</small></div>
+        </div>
         <div className="order-entry">
           <div className="status-row">
             <ConnectionStatus state={state} />
@@ -498,9 +557,10 @@ export default function App() {
         {error && <div className="error-banner">{error}</div>}
       </header>
       <div className="grid dashboard-grid">
-        <Cart cart={cart} className="desktop-cart" loading={loading} />
+        <Cart cart={cart} className="desktop-cart" loading={loading} onChangeQuantity={changeCartItemQuantity} />
         <Transcript
           disabled={state === "connecting" || state === "speaking"}
+          thinking={state === "connecting"}
           lines={transcript}
           onAddProduct={(name) => void processQuestion(
             speechLanguage === "ur-PK" ? `${name} ایک عدد آرڈر میں شامل کریں` : `Add one ${name} to my order`,
@@ -526,7 +586,7 @@ export default function App() {
             >
               <span aria-hidden="true">×</span>
             </button>
-            <Cart cart={cart} className="drawer-cart" headingId="mobile-cart-title" loading={loading} />
+            <Cart cart={cart} className="drawer-cart" headingId="mobile-cart-title" loading={loading} onChangeQuantity={changeCartItemQuantity} />
           </aside>
         </div>
       )}
